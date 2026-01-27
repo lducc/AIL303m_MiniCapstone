@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import os
 from sklearn.model_selection import train_test_split
-
+from sklearn.preprocessing import StandardScaler
 
 class PCA:
 
@@ -159,17 +159,45 @@ test_pca_df = pd.DataFrame(
 )
 
 
-# Merge PCA with FULL data
-train_with_pca = pd.concat([train_df, train_pca_df], axis=1).drop('Patient_ID', axis=1)
-test_with_pca = pd.concat([test_df, test_pca_df], axis=1).drop('Patient_ID', axis=1)
+train_with_pca = pd.concat([train_df, train_pca_df], axis=1)
+test_with_pca = pd.concat([test_df, test_pca_df], axis=1)
+
+train_with_pca = train_with_pca.drop(columns=['Patient_ID'])
+test_with_pca = test_with_pca.drop(columns=['Patient_ID'])
+
+exclude_cols = [
+    'Heart_Disease_Risk',
+    'PC1',
+    'PC2'
+]
 
 
-# Save
+binary_cols = [
+    'Gender',
+    'Smoking_Status',
+    'Family_History'
+]
+scale_cols = [
+    col for col in train_with_pca.columns
+    if col not in exclude_cols
+    and col not in binary_cols
+    and train_with_pca[col].dtype != 'object'
+]
+
+scaler = StandardScaler()
+
+train_with_pca[scale_cols] = scaler.fit_transform(
+    train_with_pca[scale_cols]
+)
+
+test_with_pca[scale_cols] = scaler.transform(
+    test_with_pca[scale_cols]
+)
+
 train_with_pca.to_csv("train_pca.csv", index=False)
 test_with_pca.to_csv("test_pca.csv", index=False)
 
 
-# Check
 print("Train Data with PCA:")
 print(train_with_pca.head())
 
