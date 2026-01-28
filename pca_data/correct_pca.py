@@ -105,7 +105,8 @@ features = [
     'Age', 'Height_cm', 'Weight_kg', 'BMI',
     'Systolic_BP', 'Diastolic_BP',
     'Cholesterol_Total', 'Cholesterol_HDL',
-    'Cholesterol_LDL', 'Fasting_Blood_Sugar'
+    'Cholesterol_LDL', 'Fasting_Blood_Sugar',
+    'Stress_Level'	,'Sleep_Hours'
 ]
 
 
@@ -123,7 +124,7 @@ train_df, test_df = train_test_split(
 )
 
 
-# Reset index (IMPORTANT)
+# Reset index
 train_df = train_df.reset_index(drop=True)
 test_df = test_df.reset_index(drop=True)
 
