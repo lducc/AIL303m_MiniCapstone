@@ -1,6 +1,6 @@
 import sys
 import os
-# Must add the project root to sys.path so streamlit can find utils and xai
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
