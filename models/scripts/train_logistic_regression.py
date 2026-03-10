@@ -12,7 +12,7 @@ def train():
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     param_grid = {'C': [0.01, 0.1, 1.0, 10.0], 'penalty': ['l2']}
 
-    base_model = LogisticRegression(max_iter=1000, random_state=42, class_weight='balanced', multi_class='auto')
+    base_model = LogisticRegression(max_iter=1000, random_state=42, class_weight='balanced')
     grid_search = GridSearchCV(estimator=base_model, param_grid=param_grid, scoring=f2_scorer, cv=cv, n_jobs=-1)
     grid_search.fit(X_train_sc, y_train)
     model = grid_search.best_estimator_
