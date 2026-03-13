@@ -27,7 +27,7 @@ def main():
         print("No high risk patients found in dataset.")
         return
         
-    np.random.seed(42)  # For reproducibility during testing
+    np.random.seed(42)  
     test_patients = np.random.choice(high_risk_idx, 5, replace=False)
     
     for i, patient_idx in enumerate(test_patients):

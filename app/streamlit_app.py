@@ -1,47 +1,33 @@
 import sys
 import os
-
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
 import numpy as np
 import streamlit as st
-
+import plotly.graph_objects as go
 
 from utils.data_loader import load_model, load_scaler, load_feature_names
 from xai.counterfactual import CounterfactualExplainer, recompute_derived, DERIVED
 
-# --- Config ---
 st.set_page_config(
     page_title="Heart Disease Risk Prediction & Action Plan",
-    page_icon="❤️",
     layout="wide"
 )
 
 @st.cache_resource
 def load_app_assets():
-    """Load models, scaler, features only once."""
-    model = load_model("logistic_regression") # LR is our best for xAI
-    
-    # Patch for Scikit-learn to avoid GridSearchCV model attribute errors 
-    if not hasattr(model, 'multi_class'):
-        model.multi_class = 'auto'
-    if not hasattr(model, 'classes_'):
-        model.classes_ = np.array([0, 1])
+    model = load_model("logistic_regression")
+    if not hasattr(model, 'multi_class'): model.multi_class = 'auto'
+    if not hasattr(model, 'classes_'): model.classes_ = np.array([0, 1])
     if hasattr(model, 'best_estimator_'):
-        if not hasattr(model.best_estimator_, 'multi_class'):
-            model.best_estimator_.multi_class = 'auto'
-        if not hasattr(model.best_estimator_, 'classes_'):
-            model.best_estimator_.classes_ = np.array([0, 1])
-    
+        if not hasattr(model.best_estimator_, 'multi_class'): model.best_estimator_.multi_class = 'auto'
+        if not hasattr(model.best_estimator_, 'classes_'): model.best_estimator_.classes_ = np.array([0, 1])
+
     scaler = load_scaler()
     features = load_feature_names()
-    
-    # We need realistic min/max bounds for the explainer
-    # Let's load the processed data just for bounding
     from utils.data_loader import load_processed_data
     X_full, _ = load_processed_data()
-    
     explainer = CounterfactualExplainer(model, scaler, features, X_full)
     return model, scaler, features, explainer, X_full
 
@@ -52,25 +38,79 @@ except Exception as e:
     st.stop()
 
 
+def make_gauge(value, title="Risk Level"):
+    pct = value * 100
+    color = "#FF4B4B" if pct >= 50 else "#FFA500" if pct >= 30 else "#00CC66"
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=pct,
+        number={"suffix": "%", "font": {"size": 48, "color": color}},
+        title={"text": title, "font": {"size": 18}},
+        gauge={
+            "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#333"},
+            "bar": {"color": color},
+            "bgcolor": "rgba(0,0,0,0)",
+            "steps": [
+                {"range": [0, 30], "color": "rgba(0,204,102,0.15)"},
+                {"range": [30, 50], "color": "rgba(255,165,0,0.15)"},
+                {"range": [50, 100], "color": "rgba(255,75,75,0.15)"},
+            ],
+            "threshold": {"line": {"color": "#333", "width": 3}, "thickness": 0.8, "value": 50},
+        }
+    ))
+    fig.update_layout(height=280, margin=dict(t=60, b=20, l=30, r=30), paper_bgcolor="rgba(0,0,0,0)", font_color="#FAFAFA")
+    return fig
+
+
+def make_comparison_chart(changes, derived_changes):
+    feats, originals, targets = [], [], []
+
+    for feat, info in sorted(changes.items(), key=lambda x: x[1]["cost"], reverse=True):
+        feats.append(feat.replace("_", " "))
+        originals.append(info["original"])
+        targets.append(info["counterfactual"])
+
+    if not feats:
+        return None
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        y=feats, x=originals, name="Current",
+        orientation="h", marker_color="#FF6B6B",
+        text=[f"{v:.1f}" for v in originals], textposition="auto"
+    ))
+    fig.add_trace(go.Bar(
+        y=feats, x=targets, name="Target",
+        orientation="h", marker_color="#51CF66",
+        text=[f"{v:.1f}" for v in targets], textposition="auto"
+    ))
+    fig.update_layout(
+        barmode="group", title="Current vs Target Values",
+        height=max(250, len(feats) * 80 + 100),
+        margin=dict(t=60, b=30, l=10, r=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#FAFAFA", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        yaxis=dict(autorange="reversed"),
+    )
+    return fig
+
+
 # --- UI ---
-st.title("❤️ Heart Disease Risk Prediction & Action Plan")
+st.title("Heart Disease Risk Prediction & Action Plan")
 st.markdown("""
 Enter your health information below to predict your risk of heart disease. 
-If you are at high risk, the AI will provide a **personalized, minimum-action plan** to lower your risk back to a healthy range.
+If you are at high risk, the AI will provide a **personalized, minimum-action plan** to lower your risk.
 """)
 
 st.divider()
 
 col1, col2, col3 = st.columns(3)
-
-# Dictionary to hold raw user inputs
 inputs = {}
 
 with col1:
     st.subheader("Demographics")
     inputs["Age"] = st.slider("Age", 20, 100, 50)
-    gender_map = {"Male": 1, "Female": 0}
-    inputs["Gender"] = gender_map[st.selectbox("Gender", ["Male", "Female"])]
+    inputs["Gender"] = {"Male": 1, "Female": 0}[st.selectbox("Gender", ["Male", "Female"])]
     inputs["Height_cm"] = st.number_input("Height (cm)", 140.0, 220.0, 170.0)
     inputs["Weight_kg"] = st.number_input("Weight (kg)", 40.0, 150.0, 70.0)
     inputs["Family_History"] = 1 if st.checkbox("Family History of Heart Disease") else 0
@@ -92,71 +132,92 @@ with col3:
     inputs["Stress_Level"] = st.slider("Stress Level (0-10)", 0, 10, 5)
     inputs["Sleep_Hours"] = st.slider("Sleep Hours", 3, 12, 7)
 
-# We must initialize the derived features with zeros, they will be recomputed
 for df_name in DERIVED:
     inputs[df_name] = 0.0
 
 st.divider()
 
 if st.button("Predict Risk & Generate Action Plan", type="primary"):
-    
-    # 1. Structure as array matching exactly the feature_names order
+
     fi = {f: i for i, f in enumerate(features)}
     x_raw = np.zeros(len(features))
     for f in features:
-        if f in inputs:
-            x_raw[fi[f]] = inputs[f]
-            
-    # 2. Recompute the derived features (BMI, ratios, etc)
+        if f in inputs: x_raw[fi[f]] = inputs[f]
     x_raw = recompute_derived(x_raw, fi)
-    
-    # 3. Predict using the explainer's helper
+
     pred, proba = explainer._predict_from_raw(x_raw)
     risk_prob = proba[1]
-    
-    if pred == 0:
-        st.success(f"### 🎉 Low Risk (Probability: {risk_prob:.1%})")
-        st.markdown("Great job! Based on your metrics, your risk of heart disease is currently low. Keep up the good work.")
-        
-        with st.expander("View calculated metrics"):
-            st.write(f"- BMI: {x_raw[fi['BMI']]:.1f}")
-            st.write(f"- Cholesterol Ratio: {x_raw[fi['Cholesterol_Ratio']]:.1f}")
-            st.write(f"- LDL/HDL Ratio: {x_raw[fi['LDL_HDL_Ratio']]:.1f}")
-            st.write(f"- Pulse Pressure: {x_raw[fi['Pulse_Pressure']]:.1f}")
-            st.write(f"- Mean Arterial Pressure: {x_raw[fi['MAP']]:.1f}")
-            
-    else:
-        st.error(f"### ⚠️ High Risk (Probability: {risk_prob:.1%})")
-        st.markdown("Based on your metrics, you are at an elevated risk of heart disease.")
-        
-        with st.spinner("Generating personalized action plan..."):
-            res = explainer.generate(x_raw, desired_class=0, n_restarts=10)
-            
-        if not res['success']:
-            st.warning("We couldn't find a simple action plan that brings your risk down to a safe level. Please consult a doctor immediately.")
-        else:
-            st.success("### 📝 Your Personalized Action Plan")
-            st.markdown(f"By making the following changes, your predicted risk will drop to **{res['cf_proba'][1]:.1%}**.")
-            
-            # Display actionable changes
-            if res["changes"]:
-                st.markdown("#### Primary Goals")
-                for feat, info in sorted(res["changes"].items(), key=lambda x: x[1]["cost"], reverse=True):
-                    orig_val = info['original']
-                    new_val = info['counterfactual']
-                    delta = info['delta']
-                    arrow = "⬇️ Reduce" if delta < 0 else "⬆️ Increase"
-                    
-                    st.info(f"**{arrow} {feat.replace('_', ' ')}**\n"
-                            f"Target: **{new_val:.1f}** (Currently: {orig_val:.1f})")
-            else:
-                st.write("No actionable changes found.")
 
-            # Display derived changes
+    if pred == 0:
+        # ---- LOW RISK ----
+        st.plotly_chart(make_gauge(risk_prob, "Your Heart Disease Risk"), use_container_width=True)
+        st.success("### Low Risk - You're in great shape!")
+        st.markdown("Based on your metrics, your risk of heart disease is currently low. Keep up the healthy habits!")
+
+        with st.expander("View calculated metrics"):
+            mc1, mc2, mc3 = st.columns(3)
+            mc1.metric("BMI", f"{x_raw[fi['BMI']]:.1f}")
+            mc2.metric("Cholesterol Ratio", f"{x_raw[fi['Cholesterol_Ratio']]:.1f}")
+            mc3.metric("LDL/HDL Ratio", f"{x_raw[fi['LDL_HDL_Ratio']]:.1f}")
+            mc4, mc5, _ = st.columns(3)
+            mc4.metric("Pulse Pressure", f"{x_raw[fi['Pulse_Pressure']]:.0f}")
+            mc5.metric("Mean Arterial Pressure", f"{x_raw[fi['MAP']]:.0f}")
+
+    else:
+        # ---- HIGH RISK ----
+        st.plotly_chart(make_gauge(risk_prob, "Your Current Risk"), use_container_width=True)
+        st.error("### High Risk - Action plan recommended")
+        st.markdown("Based on your metrics, you are at an elevated risk of heart disease. The AI is generating the easiest possible plan to reduce your risk.")
+
+        with st.spinner("Generating personalized action plan..."):
+            res = explainer.generate(x_raw, desired_class=0, n_restarts=4)
+
+        if not res['success']:
+            st.warning("We couldn't find a simple action plan. Please consult a doctor immediately.")
+        else:
+            st.divider()
+
+            # --- Risk Comparison Gauges ---
+            st.markdown("## Risk Before vs After")
+            g1, g2 = st.columns(2)
+            with g1:
+                st.plotly_chart(make_gauge(res['orig_proba'][1], "Before (Current)"), use_container_width=True)
+            with g2:
+                st.plotly_chart(make_gauge(res['cf_proba'][1], "After (Target)"), use_container_width=True)
+
+            st.divider()
+
+            # --- Before vs After Bar Chart ---
+            st.markdown("## Your Personalized Action Plan")
+            comparison_fig = make_comparison_chart(res["changes"], res.get("derived_changes", {}))
+            if comparison_fig:
+                st.plotly_chart(comparison_fig, use_container_width=True)
+
+            # --- Action Cards with st.metric ---
+            if res["changes"]:
+                st.markdown("### Primary Goals")
+                cols = st.columns(min(len(res["changes"]), 3))
+                for i, (feat, info) in enumerate(sorted(res["changes"].items(), key=lambda x: x[1]["cost"], reverse=True)):
+                    with cols[i % 3]:
+                        delta_val = info['delta']
+                        delta_str = f"{delta_val:+.1f}"
+                        st.metric(
+                            label=feat.replace("_", " "),
+                            value=f"{info['counterfactual']:.1f}",
+                            delta=delta_str,
+                            delta_color="inverse"  # red for increase, green for decrease (medical context)
+                        )
+
+            # --- Derived Changes ---
             if res.get("derived_changes"):
-                st.markdown("#### Secondary Effects (Automatic)")
-                st.markdown("Achieving the goals above will automatically improve these metrics:")
-                for feat, info in res["derived_changes"].items():
-                    orig_val = info['original']
-                    new_val = info['counterfactual']
-                    st.write(f"- **{feat.replace('_', ' ')}**: {orig_val:.1f} → **{new_val:.1f}**")
+                st.markdown("### Automatic Secondary Effects")
+                st.caption("These metrics will improve automatically when you achieve the goals above.")
+                dcols = st.columns(min(len(res["derived_changes"]), 3))
+                for i, (feat, info) in enumerate(res["derived_changes"].items()):
+                    with dcols[i % 3]:
+                        st.metric(
+                            label=feat.replace("_", " "),
+                            value=f"{info['counterfactual']:.1f}",
+                            delta=f"{info['delta']:+.1f}",
+                            delta_color="inverse"
+                        )

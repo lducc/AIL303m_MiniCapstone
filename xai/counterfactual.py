@@ -11,7 +11,7 @@ COSTS = {"Weight_kg": 3.0, "Systolic_BP": 4.0, "Diastolic_BP": 4.0, "Cholesterol
 def recompute_derived(x, fi):
     x[fi["BMI"]] = x[fi["Weight_kg"]] / ((x[fi["Height_cm"]] / 100.0) ** 2)
     hdl = max(x[fi["Cholesterol_HDL"]], 1e-6)
-    x[fi["Cholesterol_Ratio"]], x[fi["LDL_HDL_Ratio"]]  = x[fi["Cholesterol_Total"]] / hdl, x[fi["Cholesterol_LDL"]] / hdl
+    x[fi["Cholesterol_Ratio"]], x[fi["LDL_HDL_Ratio"]] = x[fi["Cholesterol_Total"]] / hdl, x[fi["Cholesterol_LDL"]] / hdl
     x[fi["Pulse_Pressure"]] = x[fi["Systolic_BP"]] - x[fi["Diastolic_BP"]]
     x[fi["MAP"]] = x[fi["Diastolic_BP"]] + x[fi["Pulse_Pressure"]] / 3.0
     return x
@@ -22,75 +22,83 @@ class CounterfactualExplainer:
         self.fi = {f: i for i, f in enumerate(self.features)}
         self.src = [f for f in self.features if f not in IMMUTABLE | DERIVED]
         self.idx = [self.fi[f] for f in self.src]
-        
-        # Bounding box limits for optimization (min and max possible values observed in real life)
+
         self.lb = np.array([X_full[f].min() for f in self.features], dtype=float)
         self.ub = np.array([X_full[f].max() for f in self.features], dtype=float)
         self.ranges = np.maximum([self.ub[i] - self.lb[i] for i in self.idx], 1e-6)
         self.cost_weights = np.array([COSTS[f] for f in self.src])
 
+        # Pre-extract scaler parameters as raw NumPy for speed (avoids DataFrame creation in hot loop)
+        self.sc_mean = scaler.mean_.copy()
+        self.sc_scale = scaler.scale_.copy()
+
+        # Pre-extract model coefficients for even faster prediction (Logistic Regression only)
+        estimator = model.best_estimator_ if hasattr(model, 'best_estimator_') else model
+        self.coef = estimator.coef_.ravel()
+        self.intercept = float(estimator.intercept_[0])
+
+    def _fast_proba(self, x_raw):
+        """Predict probability using raw NumPy math instead of sklearn predict_proba. ~50x faster."""
+        x_scaled = (x_raw - self.sc_mean) / self.sc_scale
+        logit = np.dot(self.coef, x_scaled) + self.intercept
+        p1 = 1.0 / (1.0 + np.exp(-logit))
+        return np.array([1.0 - p1, p1])
+
     def _predict_from_raw(self, x):
         xs = pd.DataFrame(self.scaler.transform(pd.DataFrame([x], columns=self.features)), columns=self.features)
         return int(self.model.predict(xs)[0]), self.model.predict_proba(xs)[0]
 
-    def generate(self, original, desired_class=0, n_restarts=8, max_iter=800):
+    def generate(self, original, desired_class=0, n_restarts=4, max_iter=200):
         orig, fi = np.array(original, dtype=float), self.fi
-        
-        # Determine maximum allowed change based on direction rules (d=down, u=up)
-        bounds = [
-            (self.lb[i]-orig[i], 0.0) if DIR.get(f) == "d" else 
-            (0.0, self.ub[i]-orig[i]) if DIR.get(f) == "u" else 
-            (self.lb[i]-orig[i], self.ub[i]-orig[i]) 
+        idx_arr = np.array(self.idx)
+
+        raw_bounds = [
+            (self.lb[i]-orig[i], 0.0) if DIR.get(f) == "d" else
+            (0.0, self.ub[i]-orig[i]) if DIR.get(f) == "u" else
+            (self.lb[i]-orig[i], self.ub[i]-orig[i])
             for f, i in zip(self.src, self.idx)
         ]
+        # Clamp bounds so lo <= hi (user input may be outside training data range)
+        bounds = [(min(lo, hi), max(lo, hi)) for lo, hi in raw_bounds]
 
         def objective(delta):
             cf = orig.copy()
-            for j, i in enumerate(self.idx): cf[i] += delta[j]
+            cf[idx_arr] += delta
             cf = np.clip(recompute_derived(cf, fi), self.lb, self.ub)
             if np.isnan(cf).any(): return 1e10
-            
-            # Score = Human Effort + AI Prediction Penalty
-            df = pd.DataFrame(cf.reshape(1, -1), columns=self.features)
-            xs = pd.DataFrame(self.scaler.transform(df), columns=self.features)
-            proba = self.model.predict_proba(xs)[0]
-            penalty = max(0.0, proba[1 if desired_class == 0 else 0] - 0.40) * 100.0
-            cost = float(np.sum(self.cost_weights * np.abs(cf[self.idx] - orig[self.idx]) / self.ranges))
+
+            proba = self._fast_proba(cf)
+            penalty = max(0.0, proba[1 if desired_class == 0 else 0] - 0.30) * 100.0
+            cost = float(np.sum(self.cost_weights * np.abs(cf[idx_arr] - orig[idx_arr]) / self.ranges))
             return cost + penalty
 
-        # Try optimizing from multiple random starting points to find the absolute best plan
         best, best_fun, best_cf = None, np.inf, None
         for r in range(n_restarts):
-            # Pick a random starting tweak within bounds (or 0 for the first run)
             x0 = np.zeros(len(self.src)) if r == 0 else np.array([np.random.uniform(b[0]*0.2, b[1]*0.2) for b in bounds])
             res = minimize(objective, x0, method="L-BFGS-B", bounds=bounds, options={"maxiter": max_iter, "ftol": 1e-9})
-            
-            # Apply and enforce realism (integers and rounding)
+
+            # Snap to realistic values (integers for lifestyle, 1 decimal for vitals)
             cf = orig.copy()
-            for j, i in enumerate(self.idx): cf[i] += res.x[j]
+            cf[idx_arr] += res.x
             for f in INT_FEAT: cf[fi[f]] = np.round(cf[fi[f]])
             for f in [f for f in self.features if f not in INT_FEAT | DERIVED]: cf[fi[f]] = np.round(cf[fi[f]], 1)
             cf = np.clip(recompute_derived(cf, fi), self.lb, self.ub)
-            
-            # Score this realistic rounded version to make sure it functions
-            df = pd.DataFrame(cf.reshape(1, -1), columns=self.features)
-            proba = self.model.predict_proba(pd.DataFrame(self.scaler.transform(df), columns=self.features))[0]
-            penalty = max(0.0, proba[1 if desired_class == 0 else 0] - 0.40) * 100.0
-            cost = float(np.sum(self.cost_weights * np.abs(cf[self.idx] - orig[self.idx]) / self.ranges))
+
+            proba = self._fast_proba(cf)
+            penalty = max(0.0, proba[1 if desired_class == 0 else 0] - 0.30) * 100.0
+            cost = float(np.sum(self.cost_weights * np.abs(cf[idx_arr] - orig[idx_arr]) / self.ranges))
             real_fun = cost + penalty
-            
+
             if real_fun < best_fun: best_fun, best, best_cf = real_fun, res, cf
 
         cf = best_cf
-
-        # Calculate final changes tracking dictionaries
         cf_pred, cf_proba = self._predict_from_raw(cf)
-        
-        chg = {f: {"original": orig[self.idx[j]], "counterfactual": cf[self.idx[j]], "delta": cf[self.idx[j]] - orig[self.idx[j]], "cost": self.cost_weights[j] * abs(cf[self.idx[j]] - orig[self.idx[j]]) / self.ranges[j]} 
+
+        chg = {f: {"original": orig[self.idx[j]], "counterfactual": cf[self.idx[j]], "delta": cf[self.idx[j]] - orig[self.idx[j]], "cost": self.cost_weights[j] * abs(cf[self.idx[j]] - orig[self.idx[j]]) / self.ranges[j]}
                for j, f in enumerate(self.src) if abs(cf[self.idx[j]] - orig[self.idx[j]]) > 1e-6}
-               
-        d_chg = {f: {"original": orig[fi[f]], "counterfactual": cf[fi[f]], "delta": cf[fi[f]] - orig[fi[f]]} 
+
+        d_chg = {f: {"original": orig[fi[f]], "counterfactual": cf[fi[f]], "delta": cf[fi[f]] - orig[fi[f]]}
                  for f in DERIVED if abs(cf[fi[f]] - orig[fi[f]]) > 1e-4}
 
         orig_pred, orig_proba = self._predict_from_raw(orig)
-        return {"success": (cf_pred == desired_class), "changes": chg, "derived_changes": d_chg, "total_cost": best.fun, "original": orig, "counterfactual": cf, "orig_pred": orig_pred, "orig_proba": orig_proba, "cf_pred": cf_pred, "cf_proba": cf_proba}
+        return {"success": (cf_pred == desired_class), "changes": chg, "derived_changes": d_chg, "total_cost": best_fun, "original": orig, "counterfactual": cf, "orig_pred": orig_pred, "orig_proba": orig_proba, "cf_pred": cf_pred, "cf_proba": cf_proba}
