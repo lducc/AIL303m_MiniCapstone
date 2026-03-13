@@ -7,6 +7,7 @@ DERIVED = {"BMI", "Cholesterol_Ratio", "LDL_HDL_Ratio", "Pulse_Pressure", "MAP"}
 INT_FEAT = {"Smoking_Status", "Alcohol_Consumption", "Physical_Activity_Level", "Stress_Level", "Sleep_Hours"}
 DIR = {"Weight_kg": "d", "Systolic_BP": "d", "Diastolic_BP": "d", "Cholesterol_Total": "d", "Cholesterol_LDL": "d", "Cholesterol_HDL": "u", "Fasting_Blood_Sugar": "d", "Smoking_Status": "d", "Alcohol_Consumption": "d", "Physical_Activity_Level": "u", "Stress_Level": "d", "Sleep_Hours": "u"}
 COSTS = {"Weight_kg": 3.0, "Systolic_BP": 4.0, "Diastolic_BP": 4.0, "Cholesterol_Total": 5.0, "Cholesterol_LDL": 5.0, "Cholesterol_HDL": 5.0, "Fasting_Blood_Sugar": 4.0, "Smoking_Status": 2.0, "Alcohol_Consumption": 1.0, "Physical_Activity_Level": 1.5, "Stress_Level": 2.0, "Sleep_Hours": 1.5}
+MIN_STEP = {"Weight_kg": 2.0, "Systolic_BP": 5.0, "Diastolic_BP": 5.0, "Cholesterol_Total": 10.0, "Cholesterol_LDL": 10.0, "Cholesterol_HDL": 5.0, "Fasting_Blood_Sugar": 5.0, "Smoking_Status": 1, "Alcohol_Consumption": 1, "Physical_Activity_Level": 1, "Stress_Level": 1, "Sleep_Hours": 1}
 
 def recompute_derived(x, fi):
     x[fi["BMI"]] = x[fi["Weight_kg"]] / ((x[fi["Height_cm"]] / 100.0) ** 2)
@@ -95,7 +96,7 @@ class CounterfactualExplainer:
         cf_pred, cf_proba = self._predict_from_raw(cf)
 
         chg = {f: {"original": orig[self.idx[j]], "counterfactual": cf[self.idx[j]], "delta": cf[self.idx[j]] - orig[self.idx[j]], "cost": self.cost_weights[j] * abs(cf[self.idx[j]] - orig[self.idx[j]]) / self.ranges[j]}
-               for j, f in enumerate(self.src) if abs(cf[self.idx[j]] - orig[self.idx[j]]) > 1e-6}
+               for j, f in enumerate(self.src) if abs(cf[self.idx[j]] - orig[self.idx[j]]) >= MIN_STEP.get(f, 1e-6)}
 
         d_chg = {f: {"original": orig[fi[f]], "counterfactual": cf[fi[f]], "delta": cf[fi[f]] - orig[fi[f]]}
                  for f in DERIVED if abs(cf[fi[f]] - orig[fi[f]]) > 1e-4}

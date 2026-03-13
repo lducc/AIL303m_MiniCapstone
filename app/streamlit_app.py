@@ -60,12 +60,19 @@ def make_gauge(value, title="Risk Level"):
     ))
     fig.update_layout(height=280, margin=dict(t=60, b=20, l=30, r=30), paper_bgcolor="rgba(0,0,0,0)", font_color="#FAFAFA")
     return fig
+BINARY_FEAT = {"Smoking_Status", "Family_History"}
+LABELS = {
+    "Smoking_Status": {0: "Non-Smoker", 1: "Smoker"},
+    "Alcohol_Consumption": {0: "None", 1: "Light", 2: "Moderate", 3: "Heavy"},
+    "Physical_Activity_Level": {0: "Sedentary", 1: "Low", 2: "Moderate", 3: "Active", 4: "Very Active"},
+}
 
-
-def make_comparison_chart(changes, derived_changes):
+def make_comparison_chart(changes):
     feats, originals, targets = [], [], []
 
     for feat, info in sorted(changes.items(), key=lambda x: x[1]["cost"], reverse=True):
+        if feat in BINARY_FEAT:
+            continue  # Binary features shown separately as text
         feats.append(feat.replace("_", " "))
         originals.append(info["original"])
         targets.append(info["counterfactual"])
@@ -189,24 +196,48 @@ if st.button("Predict Risk & Generate Action Plan", type="primary"):
 
             # --- Before vs After Bar Chart ---
             st.markdown("## Your Personalized Action Plan")
-            comparison_fig = make_comparison_chart(res["changes"], res.get("derived_changes", {}))
+            comparison_fig = make_comparison_chart(res["changes"])
             if comparison_fig:
                 st.plotly_chart(comparison_fig, use_container_width=True)
 
             # --- Action Cards with st.metric ---
             if res["changes"]:
-                st.markdown("### Primary Goals")
-                cols = st.columns(min(len(res["changes"]), 3))
-                for i, (feat, info) in enumerate(sorted(res["changes"].items(), key=lambda x: x[1]["cost"], reverse=True)):
-                    with cols[i % 3]:
-                        delta_val = info['delta']
-                        delta_str = f"{delta_val:+.1f}"
-                        st.metric(
-                            label=feat.replace("_", " "),
-                            value=f"{info['counterfactual']:.1f}",
-                            delta=delta_str,
-                            delta_color="inverse"  # red for increase, green for decrease (medical context)
-                        )
+                # Separate binary/categorical from continuous
+                binary_changes = {k: v for k, v in res["changes"].items() if k in BINARY_FEAT}
+                labeled_changes = {k: v for k, v in res["changes"].items() if k in LABELS and k not in BINARY_FEAT}
+                numeric_changes = {k: v for k, v in res["changes"].items() if k not in BINARY_FEAT and k not in LABELS}
+
+                # Show binary changes as prominent text cards
+                if binary_changes:
+                    for feat, info in binary_changes.items():
+                        label_map = LABELS.get(feat, {})
+                        old_label = label_map.get(int(info["original"]), str(int(info["original"])))
+                        new_label = label_map.get(int(info["counterfactual"]), str(int(info["counterfactual"])))
+                        st.success(f"**{feat.replace('_', ' ')}**: {old_label} → {new_label}")
+
+                # Show labeled categorical changes with readable names
+                if labeled_changes:
+                    st.markdown("### Lifestyle Changes")
+                    lc_cols = st.columns(min(len(labeled_changes), 3))
+                    for i, (feat, info) in enumerate(labeled_changes.items()):
+                        with lc_cols[i % 3]:
+                            label_map = LABELS.get(feat, {})
+                            old_label = label_map.get(int(info["original"]), str(int(info["original"])))
+                            new_label = label_map.get(int(info["counterfactual"]), str(int(info["counterfactual"])))
+                            st.metric(label=feat.replace("_", " "), value=new_label, delta=f"was {old_label}")
+
+                # Show numeric continuous changes with delta arrows
+                if numeric_changes:
+                    st.markdown("### Medical Targets")
+                    nc_cols = st.columns(min(len(numeric_changes), 3))
+                    for i, (feat, info) in enumerate(sorted(numeric_changes.items(), key=lambda x: x[1]["cost"], reverse=True)):
+                        with nc_cols[i % 3]:
+                            st.metric(
+                                label=feat.replace("_", " "),
+                                value=f"{info['counterfactual']:.1f}",
+                                delta=f"{info['delta']:+.1f}",
+                                delta_color="inverse"
+                            )
 
             # --- Derived Changes ---
             if res.get("derived_changes"):
