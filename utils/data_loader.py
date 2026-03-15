@@ -1,8 +1,3 @@
-"""
-utils/data_loader.py
-Shared data loading, splitting, and scaling for all model scripts and notebooks.
-"""
-
 import os
 import pandas as pd
 import numpy as np
@@ -10,10 +5,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 import joblib
 
-# Determine the absolute project root based on this file's location
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# ---- Paths ----
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 MODEL_OUTPUT_DIR = os.path.join(PROJECT_ROOT, "models", "outputs")
 

@@ -5,3 +5,6 @@ __pycache__/
 03_evaluation_shap.ipynb
 04_counterfactual_xai.ipynb
 ETL.ipynb
+paper/*
+!paper/main.pdf
+data/eda_plots.ipynb

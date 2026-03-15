@@ -1,6 +1,6 @@
 import os, joblib
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report, fbeta_score, make_scorer
+from sklearn.metrics import classification_report, fbeta_score, make_scorer
 from sklearn.model_selection import StratifiedKFold, GridSearchCV
 from utils.data_loader import load_processed_data, split_and_scale, MODEL_OUTPUT_DIR
 

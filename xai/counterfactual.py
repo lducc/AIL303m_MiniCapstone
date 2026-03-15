@@ -29,25 +29,23 @@ class CounterfactualExplainer:
         self.ranges = np.maximum([self.ub[i] - self.lb[i] for i in self.idx], 1e-6)
         self.cost_weights = np.array([COSTS[f] for f in self.src])
 
-        # Pre-extract scaler parameters as raw NumPy for speed (avoids DataFrame creation in hot loop)
         self.sc_mean = scaler.mean_.copy()
         self.sc_scale = scaler.scale_.copy()
 
-        # Pre-extract model coefficients for even faster prediction (Logistic Regression only)
         estimator = model.best_estimator_ if hasattr(model, 'best_estimator_') else model
         self.coef = estimator.coef_.ravel()
         self.intercept = float(estimator.intercept_[0])
 
     def _fast_proba(self, x_raw):
-        """Predict probability using raw NumPy math instead of sklearn predict_proba. ~50x faster."""
         x_scaled = (x_raw - self.sc_mean) / self.sc_scale
         logit = np.dot(self.coef, x_scaled) + self.intercept
         p1 = 1.0 / (1.0 + np.exp(-logit))
         return np.array([1.0 - p1, p1])
 
     def _predict_from_raw(self, x):
-        xs = pd.DataFrame(self.scaler.transform(pd.DataFrame([x], columns=self.features)), columns=self.features)
-        return int(self.model.predict(xs)[0]), self.model.predict_proba(xs)[0]
+        proba = self._fast_proba(x)
+        pred = 1 if proba[1] >= 0.5 else 0
+        return pred, proba
 
     def generate(self, original, desired_class=0, n_restarts=4, max_iter=200):
         orig, fi = np.array(original, dtype=float), self.fi
@@ -59,7 +57,6 @@ class CounterfactualExplainer:
             (self.lb[i]-orig[i], self.ub[i]-orig[i])
             for f, i in zip(self.src, self.idx)
         ]
-        # Clamp bounds so lo <= hi (user input may be outside training data range)
         bounds = [(min(lo, hi), max(lo, hi)) for lo, hi in raw_bounds]
 
         def objective(delta):
@@ -78,7 +75,6 @@ class CounterfactualExplainer:
             x0 = np.zeros(len(self.src)) if r == 0 else np.array([np.random.uniform(b[0]*0.2, b[1]*0.2) for b in bounds])
             res = minimize(objective, x0, method="L-BFGS-B", bounds=bounds, options={"maxiter": max_iter, "ftol": 1e-9})
 
-            # Snap to realistic values (integers for lifestyle, 1 decimal for vitals)
             cf = orig.copy()
             cf[idx_arr] += res.x
             for f in INT_FEAT: cf[fi[f]] = np.round(cf[fi[f]])
@@ -90,7 +86,8 @@ class CounterfactualExplainer:
             cost = float(np.sum(self.cost_weights * np.abs(cf[idx_arr] - orig[idx_arr]) / self.ranges))
             real_fun = cost + penalty
 
-            if real_fun < best_fun: best_fun, best, best_cf = real_fun, res, cf
+            if real_fun < best_fun:
+                best_fun, best, best_cf = real_fun, res, cf
 
         cf = best_cf
         cf_pred, cf_proba = self._predict_from_raw(cf)
