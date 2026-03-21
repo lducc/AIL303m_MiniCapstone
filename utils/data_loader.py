@@ -27,7 +27,7 @@ def load_processed_data():
     return X, y
 
 
-def split_and_scale(X, y, test_size=0.2, random_state=42, save=True):
+def split_and_scale(X, y, test_size=0.25, random_state=42, save=True):
     feature_names = list(X.columns)
 
     X_train, X_test, y_train, y_test = train_test_split(
